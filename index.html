@@ -1,4 +1,4 @@
-<index.html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -371,9 +371,96 @@ body {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── LOGIN ── */
+.login-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: #0f172a;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.login-overlay.hidden { display: none; }
+.login-card {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 20px;
+  padding: 40px 36px;
+  width: 100%; max-width: 400px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.6);
+  animation: loginIn .4s ease;
+}
+@keyframes loginIn {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.login-logo {
+  text-align: center; margin-bottom: 28px;
+}
+.login-logo .ico {
+  width: 64px; height: 64px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-radius: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 32px; margin-bottom: 14px;
+}
+.login-logo h2 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+.login-logo p  { font-size: 13px; color: #64748b; }
+.login-field { margin-bottom: 16px; }
+.login-field label {
+  display: block; font-size: 11px; font-weight: 600;
+  color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px;
+}
+.login-field input {
+  width: 100%; padding: 11px 14px;
+  background: #0f172a; border: 1px solid #334155;
+  border-radius: 9px; color: #f1f5f9; font-size: 14px;
+  outline: none; transition: border-color .15s;
+}
+.login-field input:focus { border-color: #6366f1; }
+.login-btn {
+  width: 100%; padding: 13px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff; border: none; border-radius: 10px;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  margin-top: 8px; transition: filter .2s;
+}
+.login-btn:hover { filter: brightness(1.1); }
+.login-error {
+  background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+  color: #ef4444; border-radius: 8px; padding: 10px 14px;
+  font-size: 13px; text-align: center; margin-top: 14px; display: none;
+}
+.login-error.show { display: block; }
+.logout-btn {
+  background: transparent; border: 1px solid #334155;
+  color: #94a3b8; padding: 5px 12px; border-radius: 7px;
+  font-size: 12px; cursor: pointer; transition: all .15s;
+}
+.logout-btn:hover { background: rgba(239,68,68,.1); color: #ef4444; border-color: rgba(239,68,68,.3); }
 </style>
 </head>
 <body>
+
+<!-- ── LOGIN SCREEN ── -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="ico">💰</div>
+      <h2>FinanceApp</h2>
+      <p>Controle Financeiro Pessoal</p>
+    </div>
+    <div class="login-field">
+      <label>Usuário</label>
+      <input type="text" id="login-user" placeholder="Digite seu usuário" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin()">
+    </div>
+    <div class="login-field">
+      <label>Senha</label>
+      <input type="password" id="login-pass" placeholder="Digite sua senha" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
+    </div>
+    <button class="login-btn" onclick="doLogin()">🔐 Entrar</button>
+    <div class="login-error" id="login-error">Usuário ou senha incorretos.</div>
+  </div>
+</div>
 
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 
@@ -435,6 +522,7 @@ body {
         <button class="btn-icon" onclick="changeMonth(1)">›</button>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="exportCSV()" title="Exportar CSV">⬇ CSV</button>
+      <button class="logout-btn" onclick="doLogout()" title="Sair">🚪 Sair</button>
     </div>
   </header>
   <div class="content" id="app-content"></div>
@@ -1290,9 +1378,51 @@ function exportCSV() {
 // ════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════
+// ════════════════════════════════════════════════
+// AUTH
+// ════════════════════════════════════════════════
+const AUTH_USER = 'jorge';
+const AUTH_PASS = 'jorge1210';
+const AUTH_KEY  = 'fa_auth';
+
+function checkAuth() {
+  if (sessionStorage.getItem(AUTH_KEY) === 'ok') {
+    document.getElementById('login-overlay').classList.add('hidden');
+  } else {
+    document.getElementById('login-overlay').classList.remove('hidden');
+    setTimeout(() => document.getElementById('login-user').focus(), 100);
+  }
+}
+
+function doLogin() {
+  const u = document.getElementById('login-user').value.trim();
+  const p = document.getElementById('login-pass').value;
+  const err = document.getElementById('login-error');
+  if (u === AUTH_USER && p === AUTH_PASS) {
+    sessionStorage.setItem(AUTH_KEY, 'ok');
+    document.getElementById('login-overlay').classList.add('hidden');
+    err.classList.remove('show');
+  } else {
+    err.classList.add('show');
+    document.getElementById('login-pass').value = '';
+    document.getElementById('login-pass').focus();
+  }
+}
+
+function doLogout() {
+  if (!confirm('Deseja sair do sistema?')) return;
+  sessionStorage.removeItem(AUTH_KEY);
+  document.getElementById('login-user').value = '';
+  document.getElementById('login-pass').value = '';
+  document.getElementById('login-error').classList.remove('show');
+  document.getElementById('login-overlay').classList.remove('hidden');
+}
+
+// ── INIT ──
 loadData();
 document.getElementById('month-label').textContent = mName(S.cm, S.cy);
 navigate('dashboard');
+checkAuth();
 </script>
 </body>
 </html>
