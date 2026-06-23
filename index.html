@@ -437,6 +437,36 @@ body {
   font-size: 12px; cursor: pointer; transition: all .15s;
 }
 .logout-btn:hover { background: rgba(239,68,68,.1); color: #ef4444; border-color: rgba(239,68,68,.3); }
+
+/* ── USER BADGE ── */
+.user-badge {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(99,102,241,.12); border: 1px solid rgba(99,102,241,.25);
+  border-radius: 8px; padding: 5px 11px; font-size: 12px; color: #818cf8;
+}
+.user-badge .avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: linear-gradient(135deg,#6366f1,#8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff;
+}
+
+/* ── USERS PANEL ── */
+.users-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 14px; }
+.user-card {
+  background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.user-card .uc-info { display: flex; align-items: center; gap: 10px; }
+.user-card .uc-av {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: linear-gradient(135deg,#6366f1,#8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.user-card .uc-name { font-size: 13px; font-weight: 600; }
+.user-card .uc-role { font-size: 11px; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -504,6 +534,12 @@ body {
         <span class="ni">🎯</span> Metas Financeiras
       </div>
     </div>
+    <div class="nav-section" id="nav-admin-section" style="display:none">
+      <div class="nav-section-title">Administração</div>
+      <div class="nav-item" onclick="navigate('usuarios')" id="nav-usuarios">
+        <span class="ni">👥</span> Usuários
+      </div>
+    </div>
   </nav>
   <div class="sidebar-footer">Dados salvos localmente no navegador</div>
 </aside>
@@ -522,6 +558,10 @@ body {
         <button class="btn-icon" onclick="changeMonth(1)">›</button>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="exportCSV()" title="Exportar CSV">⬇ CSV</button>
+      <div class="user-badge" id="user-badge">
+        <div class="avatar" id="user-avatar">J</div>
+        <span id="user-name-display">jorge</span>
+      </div>
       <button class="logout-btn" onclick="doLogout()" title="Sair">🚪 Sair</button>
     </div>
   </header>
@@ -1379,29 +1419,103 @@ function exportCSV() {
 // INIT
 // ════════════════════════════════════════════════
 // ════════════════════════════════════════════════
-// AUTH
+// MULTI-USER AUTH
 // ════════════════════════════════════════════════
-const AUTH_USER = 'jorge';
-const AUTH_PASS = 'jorge1210';
-const AUTH_KEY  = 'fa_auth';
+const USERS_KEY   = 'fa_users_v1';
+const SESSION_KEY = 'fa_session';
+
+// Initialize users list — jorge is always admin
+function initUsers() {
+  let users = getUsers();
+  if (!users.find(u => u.username === 'jorge')) {
+    users.unshift({ username: 'jorge', password: 'jorge1210', isAdmin: true, createdAt: new Date().toISOString() });
+    saveUsers(users);
+  }
+  return users;
+}
+function getUsers() {
+  try { return JSON.parse(localStorage.getItem(USERS_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveUsers(users) {
+  localStorage.setItem(USERS_KEY, JSON.stringify(users));
+}
+
+// Current logged-in user
+let currentUser = null;
+
+// Data key scoped per user
+function userDataKey() {
+  return 'fa_v3_' + (currentUser?.username || 'guest');
+}
+
+// Override loadData/saveData to use user-scoped keys
+function loadData() {
+  try {
+    const raw = localStorage.getItem(userDataKey());
+    if (raw) {
+      const d = JSON.parse(raw);
+      S.cards     = d.cards     || [];
+      S.purchases = d.purchases || [];
+      S.incomes   = d.incomes   || [];
+      S.savings   = d.savings   || [];
+      S.goals     = d.goals     || [];
+    } else {
+      S.cards=[]; S.purchases=[]; S.incomes=[]; S.savings=[]; S.goals=[];
+    }
+  } catch(e) { console.warn('Load error', e); }
+}
+function saveData() {
+  try { localStorage.setItem(userDataKey(), JSON.stringify({ cards:S.cards, purchases:S.purchases, incomes:S.incomes, savings:S.savings, goals:S.goals })); }
+  catch(e) { toast('Erro ao salvar dados', 'error'); }
+}
 
 function checkAuth() {
-  if (sessionStorage.getItem(AUTH_KEY) === 'ok') {
-    document.getElementById('login-overlay').classList.add('hidden');
-  } else {
-    document.getElementById('login-overlay').classList.remove('hidden');
-    setTimeout(() => document.getElementById('login-user').focus(), 100);
-  }
+  try {
+    const sess = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
+    if (sess && sess.username) {
+      const users = getUsers();
+      const user = users.find(u => u.username === sess.username);
+      if (user) { loginSuccess(user); return; }
+    }
+  } catch(e) {}
+  showLogin();
+}
+
+function showLogin() {
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('login-user').value = '';
+  document.getElementById('login-pass').value = '';
+  document.getElementById('login-error').classList.remove('show');
+  setTimeout(() => document.getElementById('login-user').focus(), 100);
+}
+
+function loginSuccess(user) {
+  currentUser = user;
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ username: user.username }));
+  document.getElementById('login-overlay').classList.add('hidden');
+  document.getElementById('login-error').classList.remove('show');
+
+  // Update UI
+  const initial = user.username.charAt(0).toUpperCase();
+  document.getElementById('user-avatar').textContent = initial;
+  document.getElementById('user-name-display').textContent = user.username;
+
+  // Show admin menu if admin
+  document.getElementById('nav-admin-section').style.display = user.isAdmin ? '' : 'none';
+
+  // Load this user's data and re-render
+  loadData();
+  navigate('dashboard');
 }
 
 function doLogin() {
-  const u = document.getElementById('login-user').value.trim();
-  const p = document.getElementById('login-pass').value;
+  const u   = document.getElementById('login-user').value.trim().toLowerCase();
+  const p   = document.getElementById('login-pass').value;
   const err = document.getElementById('login-error');
-  if (u === AUTH_USER && p === AUTH_PASS) {
-    sessionStorage.setItem(AUTH_KEY, 'ok');
-    document.getElementById('login-overlay').classList.add('hidden');
-    err.classList.remove('show');
+  const users = getUsers();
+  const user  = users.find(x => x.username === u && x.password === p);
+  if (user) {
+    loginSuccess(user);
   } else {
     err.classList.add('show');
     document.getElementById('login-pass').value = '';
@@ -1411,17 +1525,135 @@ function doLogin() {
 
 function doLogout() {
   if (!confirm('Deseja sair do sistema?')) return;
-  sessionStorage.removeItem(AUTH_KEY);
-  document.getElementById('login-user').value = '';
-  document.getElementById('login-pass').value = '';
-  document.getElementById('login-error').classList.remove('show');
-  document.getElementById('login-overlay').classList.remove('hidden');
+  currentUser = null;
+  sessionStorage.removeItem(SESSION_KEY);
+  S.cards=[]; S.purchases=[]; S.incomes=[]; S.savings=[]; S.goals=[];
+  showLogin();
+}
+
+// ════════════════════════════════════════════════
+// PAGE: USUÁRIOS (admin only)
+// ════════════════════════════════════════════════
+function pgUsuarios() {
+  if (!currentUser?.isAdmin) { navigate('dashboard'); return; }
+  const users = getUsers();
+
+  document.getElementById('app-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <div>
+        <div style="font-size:16px;font-weight:700">👥 Gerenciar Usuários</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:3px">Cada usuário tem seus próprios dados — completamente separados</div>
+      </div>
+      <button class="btn btn-primary" onclick="mNovoUsuario()">+ Novo Usuário</button>
+    </div>
+
+    <div class="users-grid">
+      ${users.map(u => `
+        <div class="user-card">
+          <div class="uc-info">
+            <div class="uc-av">${u.username.charAt(0).toUpperCase()}</div>
+            <div>
+              <div class="uc-name">${u.username}</div>
+              <div class="uc-role">${u.isAdmin ? '👑 Administrador' : '👤 Usuário'}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px">
+            ${!u.isAdmin ? `<button class="btn-icon" onclick="mTrocarSenha('${u.username}')" title="Trocar senha">🔑</button>` : ''}
+            ${!u.isAdmin ? `<button class="btn-icon" onclick="delUsuario('${u.username}')" title="Excluir">🗑️</button>` : ''}
+            ${u.isAdmin ? '<span class="badge badge-purple">Admin</span>' : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="alert alert-info" style="margin-top:20px">
+      🔒 <strong>Privacidade garantida:</strong> os dados de cada usuário ficam salvos separadamente no navegador. Ninguém vê os dados de outro usuário.
+    </div>
+  `;
+}
+
+function mNovoUsuario() {
+  openModal('Novo Usuário', `
+    <div class="form-group"><label class="form-label">Usuário *</label>
+      <input class="form-input" id="fu" placeholder="Ex: maria" autocomplete="off"></div>
+    <div class="form-group"><label class="form-label">Senha *</label>
+      <input class="form-input" id="fp" type="password" placeholder="Mínimo 4 caracteres"></div>
+    <div class="form-group"><label class="form-label">Confirmar Senha *</label>
+      <input class="form-input" id="fp2" type="password" placeholder="Repita a senha"></div>
+  `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+     <button class="btn btn-primary" onclick="svNovoUsuario()">💾 Criar Usuário</button>`);
+}
+
+function svNovoUsuario() {
+  const username = document.getElementById('fu').value.trim().toLowerCase();
+  const pass     = document.getElementById('fp').value;
+  const pass2    = document.getElementById('fp2').value;
+  if (!username || !pass) return toast('Preencha todos os campos','error');
+  if (pass !== pass2) return toast('As senhas não coincidem','error');
+  if (pass.length < 4) return toast('Senha mínima de 4 caracteres','error');
+  const users = getUsers();
+  if (users.find(u => u.username === username)) return toast('Usuário já existe','error');
+  users.push({ username, password: pass, isAdmin: false, createdAt: new Date().toISOString() });
+  saveUsers(users);
+  toast(`Usuário "${username}" criado com sucesso!`, 'success');
+  closeModal();
+  pgUsuarios();
+}
+
+function mTrocarSenha(username) {
+  openModal(`Trocar Senha — ${username}`, `
+    <div class="form-group"><label class="form-label">Nova Senha *</label>
+      <input class="form-input" id="fp" type="password" placeholder="Nova senha"></div>
+    <div class="form-group"><label class="form-label">Confirmar *</label>
+      <input class="form-input" id="fp2" type="password" placeholder="Repita a senha"></div>
+  `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+     <button class="btn btn-warning" onclick="svTrocarSenha('${username}')">🔑 Alterar</button>`);
+}
+
+function svTrocarSenha(username) {
+  const pass  = document.getElementById('fp').value;
+  const pass2 = document.getElementById('fp2').value;
+  if (!pass) return toast('Digite a nova senha','error');
+  if (pass !== pass2) return toast('As senhas não coincidem','error');
+  const users = getUsers();
+  const idx   = users.findIndex(u => u.username === username);
+  users[idx].password = pass;
+  saveUsers(users);
+  toast('Senha alterada!', 'success');
+  closeModal();
+}
+
+function delUsuario(username) {
+  if (!confirm(`Excluir o usuário "${username}"?\n\nTodos os dados financeiros deste usuário serão apagados permanentemente.`)) return;
+  const users = getUsers().filter(u => u.username !== username);
+  saveUsers(users);
+  localStorage.removeItem('fa_v3_' + username);
+  toast(`Usuário "${username}" removido`, 'info');
+  pgUsuarios();
 }
 
 // ── INIT ──
-loadData();
+const PAGE_TITLES_EXT = { usuarios: 'Usuários' };
+Object.assign(PAGE_TITLES, PAGE_TITLES_EXT);
+
+initUsers();
 document.getElementById('month-label').textContent = mName(S.cm, S.cy);
-navigate('dashboard');
+
+// Patch navigate to include usuarios page
+const _origNavigate = navigate;
+navigate = function(page) {
+  if (page === 'usuarios') {
+    curPage = page;
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.getElementById('nav-usuarios')?.classList.add('active');
+    document.getElementById('page-title').textContent = 'Usuários';
+    destroyCharts();
+    pgUsuarios();
+    return;
+  }
+  _origNavigate(page);
+};
+
 checkAuth();
 </script>
 </body>
