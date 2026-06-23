@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FinanceApp — Controle Financeiro Pessoal</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <style>
 :root {
   --bg-primary: #0f172a;
@@ -470,6 +473,13 @@ body {
 </style>
 </head>
 <body>
+
+<!-- ── FIREBASE LOADING SCREEN ── -->
+<div id="fb-loading" style="display:none;position:fixed;inset:0;z-index:10000;background:#0f172a;flex-direction:column;align-items:center;justify-content:center;gap:16px">
+  <div style="width:48px;height:48px;border:4px solid #334155;border-top-color:#6366f1;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+  <div id="fb-loading-msg" style="color:#94a3b8;font-size:14px">Carregando...</div>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 
 <!-- ── LOGIN SCREEN ── -->
 <div class="login-overlay" id="login-overlay">
@@ -1416,44 +1426,31 @@ function exportCSV() {
 }
 
 // ════════════════════════════════════════════════
-// INIT
+// FIREBASE INIT
 // ════════════════════════════════════════════════
-// ════════════════════════════════════════════════
-// MULTI-USER AUTH
-// ════════════════════════════════════════════════
-const USERS_KEY   = 'fa_users_v1';
-const SESSION_KEY = 'fa_session';
+firebase.initializeApp({
+  apiKey:            "AIzaSyAa5FSZml8CEpF0GH8BUgigCsUqjT1-M7Q",
+  authDomain:        "jm-financy.firebaseapp.com",
+  projectId:         "jm-financy",
+  storageBucket:     "jm-financy.firebasestorage.app",
+  messagingSenderId: "847718324344",
+  appId:             "1:847718324344:web:d5e62bb84c4a5492dd358d"
+});
+const auth = firebase.auth();
+const db   = firebase.firestore();
 
-// Initialize users list — jorge is always admin
-function initUsers() {
-  let users = getUsers();
-  if (!users.find(u => u.username === 'jorge')) {
-    users.unshift({ username: 'jorge', password: 'jorge1210', isAdmin: true, createdAt: new Date().toISOString() });
-    saveUsers(users);
-  }
-  return users;
-}
-function getUsers() {
-  try { return JSON.parse(localStorage.getItem(USERS_KEY) || '[]'); } catch(e) { return []; }
-}
-function saveUsers(users) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
-}
-
-// Current logged-in user
+// ════════════════════════════════════════════════
+// PERSISTENCE (Firestore)
+// ════════════════════════════════════════════════
 let currentUser = null;
+let _saveTimer  = null;
 
-// Data key scoped per user
-function userDataKey() {
-  return 'fa_v3_' + (currentUser?.username || 'guest');
-}
-
-// Override loadData/saveData to use user-scoped keys
-function loadData() {
+async function loadData() {
+  if (!currentUser) return;
   try {
-    const raw = localStorage.getItem(userDataKey());
-    if (raw) {
-      const d = JSON.parse(raw);
+    const doc = await db.collection('userData').doc(currentUser.uid).get();
+    if (doc.exists) {
+      const d = doc.data();
       S.cards     = d.cards     || [];
       S.purchases = d.purchases || [];
       S.incomes   = d.incomes   || [];
@@ -1462,112 +1459,173 @@ function loadData() {
     } else {
       S.cards=[]; S.purchases=[]; S.incomes=[]; S.savings=[]; S.goals=[];
     }
-  } catch(e) { console.warn('Load error', e); }
-}
-function saveData() {
-  try { localStorage.setItem(userDataKey(), JSON.stringify({ cards:S.cards, purchases:S.purchases, incomes:S.incomes, savings:S.savings, goals:S.goals })); }
-  catch(e) { toast('Erro ao salvar dados', 'error'); }
+  } catch(e) { console.warn('Firestore load error', e); toast('Erro ao carregar dados','error'); }
 }
 
-function checkAuth() {
-  try {
-    const sess = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
-    if (sess && sess.username) {
-      const users = getUsers();
-      const user = users.find(u => u.username === sess.username);
-      if (user) { loginSuccess(user); return; }
-    }
-  } catch(e) {}
-  showLogin();
+function saveData() {
+  if (!currentUser) return;
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    db.collection('userData').doc(currentUser.uid).set({
+      cards: S.cards, purchases: S.purchases, incomes: S.incomes,
+      savings: S.savings, goals: S.goals,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(e => console.warn('Firestore save error', e));
+  }, 800);
+}
+
+// ════════════════════════════════════════════════
+// MULTI-USER AUTH (Firebase)
+// ════════════════════════════════════════════════
+const toEmail = u => `${u.toLowerCase()}@jmfinancy.local`;
+
+function showLoading(msg) {
+  const el = document.getElementById('fb-loading');
+  if (el) { el.style.display='flex'; document.getElementById('fb-loading-msg').textContent = msg||'Carregando...'; }
+}
+function hideLoading() {
+  const el = document.getElementById('fb-loading');
+  if (el) el.style.display = 'none';
 }
 
 function showLogin() {
+  hideLoading();
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('login-user').value = '';
   document.getElementById('login-pass').value = '';
   document.getElementById('login-error').classList.remove('show');
+  const btn = document.getElementById('login-btn');
+  if (btn) { btn.disabled=false; btn.textContent='🔐 Entrar'; }
   setTimeout(() => document.getElementById('login-user').focus(), 100);
 }
 
-function loginSuccess(user) {
-  currentUser = user;
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ username: user.username }));
+async function loginSuccess(firebaseUser) {
+  showLoading('Carregando seus dados...');
+  let profile;
+  try {
+    const doc = await db.collection('userProfiles').doc(firebaseUser.uid).get();
+    profile = doc.exists ? doc.data() : null;
+  } catch(e) { profile = null; }
+
+  if (!profile) {
+    const username = firebaseUser.email.replace('@jmfinancy.local','');
+    if (username !== 'jorge') {
+      // Unknown user — deny access
+      await auth.signOut();
+      showLogin();
+      const err = document.getElementById('login-error');
+      err.textContent = 'Acesso não autorizado. Contate o administrador.';
+      err.classList.add('show');
+      return;
+    }
+    profile = { username: 'jorge', isAdmin: true, createdAt: new Date().toISOString() };
+    await db.collection('userProfiles').doc(firebaseUser.uid).set(profile);
+  }
+
+  if (profile.disabled) {
+    await auth.signOut();
+    showLogin();
+    const err = document.getElementById('login-error');
+    err.textContent = 'Usuário desativado. Contate o administrador.';
+    err.classList.add('show');
+    return;
+  }
+
+  currentUser = { uid: firebaseUser.uid, ...profile };
   document.getElementById('login-overlay').classList.add('hidden');
   document.getElementById('login-error').classList.remove('show');
+  document.getElementById('user-avatar').textContent = profile.username.charAt(0).toUpperCase();
+  document.getElementById('user-name-display').textContent = profile.username;
+  document.getElementById('nav-admin-section').style.display = profile.isAdmin ? '' : 'none';
 
-  // Update UI
-  const initial = user.username.charAt(0).toUpperCase();
-  document.getElementById('user-avatar').textContent = initial;
-  document.getElementById('user-name-display').textContent = user.username;
-
-  // Show admin menu if admin
-  document.getElementById('nav-admin-section').style.display = user.isAdmin ? '' : 'none';
-
-  // Load this user's data and re-render
-  loadData();
+  await loadData();
   navigate('dashboard');
+  hideLoading();
 }
 
-function doLogin() {
+async function doLogin() {
   const u   = document.getElementById('login-user').value.trim().toLowerCase();
   const p   = document.getElementById('login-pass').value;
   const err = document.getElementById('login-error');
-  const users = getUsers();
-  const user  = users.find(x => x.username === u && x.password === p);
-  if (user) {
-    loginSuccess(user);
-  } else {
-    err.classList.add('show');
-    document.getElementById('login-pass').value = '';
-    document.getElementById('login-pass').focus();
+  const btn = document.getElementById('login-btn');
+  if (!u || !p) { err.textContent='Preencha usuário e senha.'; err.classList.add('show'); return; }
+  err.classList.remove('show');
+  btn.disabled=true; btn.textContent='⏳ Entrando...';
+  try {
+    await auth.signInWithEmailAndPassword(toEmail(u), p);
+    // onAuthStateChanged handles the rest
+  } catch(e) {
+    // First-time setup for jorge
+    if ((e.code==='auth/user-not-found'||e.code==='auth/invalid-credential') && u==='jorge') {
+      try {
+        await auth.createUserWithEmailAndPassword(toEmail(u), p);
+        return;
+      } catch(e2) { showLoginErr(err, e2.code); }
+    } else {
+      showLoginErr(err, e.code);
+    }
+    btn.disabled=false; btn.textContent='🔐 Entrar';
   }
 }
 
-function doLogout() {
+function showLoginErr(errEl, code) {
+  const msgs = {
+    'auth/user-not-found':'Usuário não encontrado.',
+    'auth/wrong-password':'Senha incorreta.',
+    'auth/invalid-credential':'Usuário ou senha incorretos.',
+    'auth/too-many-requests':'Muitas tentativas. Tente mais tarde.'
+  };
+  errEl.textContent = msgs[code] || 'Usuário ou senha incorretos.';
+  errEl.classList.add('show');
+  document.getElementById('login-pass').value = '';
+  document.getElementById('login-pass').focus();
+}
+
+async function doLogout() {
   if (!confirm('Deseja sair do sistema?')) return;
   currentUser = null;
-  sessionStorage.removeItem(SESSION_KEY);
   S.cards=[]; S.purchases=[]; S.incomes=[]; S.savings=[]; S.goals=[];
-  showLogin();
+  await auth.signOut();
+  // onAuthStateChanged fires → showLogin()
 }
 
 // ════════════════════════════════════════════════
 // PAGE: USUÁRIOS (admin only)
 // ════════════════════════════════════════════════
-function pgUsuarios() {
+async function pgUsuarios() {
   if (!currentUser?.isAdmin) { navigate('dashboard'); return; }
-  const users = getUsers();
+  let users = [];
+  try {
+    const snap = await db.collection('userProfiles').get();
+    snap.forEach(doc => users.push({ uid: doc.id, ...doc.data() }));
+  } catch(e) { toast('Erro ao carregar usuários','error'); }
 
   document.getElementById('app-content').innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
       <div>
         <div style="font-size:16px;font-weight:700">👥 Gerenciar Usuários</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:3px">Cada usuário tem seus próprios dados — completamente separados</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:3px">Dados salvos no Firebase — acessíveis de qualquer dispositivo</div>
       </div>
       <button class="btn btn-primary" onclick="mNovoUsuario()">+ Novo Usuário</button>
     </div>
-
     <div class="users-grid">
       ${users.map(u => `
         <div class="user-card">
           <div class="uc-info">
-            <div class="uc-av">${u.username.charAt(0).toUpperCase()}</div>
+            <div class="uc-av">${(u.username||'?').charAt(0).toUpperCase()}</div>
             <div>
               <div class="uc-name">${u.username}</div>
               <div class="uc-role">${u.isAdmin ? '👑 Administrador' : '👤 Usuário'}</div>
             </div>
           </div>
           <div style="display:flex;gap:6px">
-            ${!u.isAdmin ? `<button class="btn-icon" onclick="mTrocarSenha('${u.username}')" title="Trocar senha">🔑</button>` : ''}
-            ${!u.isAdmin ? `<button class="btn-icon" onclick="delUsuario('${u.username}')" title="Excluir">🗑️</button>` : ''}
-            ${u.isAdmin ? '<span class="badge badge-purple">Admin</span>' : ''}
+            ${u.isAdmin ? '<span class="badge badge-purple">Admin</span>' : `<button class="btn-icon" onclick="delUsuario('${u.uid}','${u.username}')" title="Excluir">🗑️</button>`}
           </div>
         </div>
       `).join('')}
     </div>
-
     <div class="alert alert-info" style="margin-top:20px">
-      🔒 <strong>Privacidade garantida:</strong> os dados de cada usuário ficam salvos separadamente no navegador. Ninguém vê os dados de outro usuário.
+      ☁️ <strong>Firebase:</strong> cada usuário tem dados separados na nuvem. Ao criar novo usuário você precisará fazer login novamente.
     </div>
   `;
 }
@@ -1576,70 +1634,53 @@ function mNovoUsuario() {
   openModal('Novo Usuário', `
     <div class="form-group"><label class="form-label">Usuário *</label>
       <input class="form-input" id="fu" placeholder="Ex: maria" autocomplete="off"></div>
-    <div class="form-group"><label class="form-label">Senha *</label>
-      <input class="form-input" id="fp" type="password" placeholder="Mínimo 4 caracteres"></div>
+    <div class="form-group"><label class="form-label">Senha * (mínimo 6 caracteres)</label>
+      <input class="form-input" id="fp" type="password" placeholder="Senha"></div>
     <div class="form-group"><label class="form-label">Confirmar Senha *</label>
       <input class="form-input" id="fp2" type="password" placeholder="Repita a senha"></div>
+    <div style="font-size:12px;color:var(--warning);margin-top:4px">⚠️ Após criar, você precisará fazer login novamente.</div>
   `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
      <button class="btn btn-primary" onclick="svNovoUsuario()">💾 Criar Usuário</button>`);
 }
 
-function svNovoUsuario() {
+async function svNovoUsuario() {
   const username = document.getElementById('fu').value.trim().toLowerCase();
   const pass     = document.getElementById('fp').value;
   const pass2    = document.getElementById('fp2').value;
   if (!username || !pass) return toast('Preencha todos os campos','error');
   if (pass !== pass2) return toast('As senhas não coincidem','error');
-  if (pass.length < 4) return toast('Senha mínima de 4 caracteres','error');
-  const users = getUsers();
-  if (users.find(u => u.username === username)) return toast('Usuário já existe','error');
-  users.push({ username, password: pass, isAdmin: false, createdAt: new Date().toISOString() });
-  saveUsers(users);
-  toast(`Usuário "${username}" criado com sucesso!`, 'success');
-  closeModal();
-  pgUsuarios();
+  if (pass.length < 6) return toast('Senha mínima de 6 caracteres','error');
+  if (!/^[a-z0-9_]+$/.test(username)) return toast('Use apenas letras, números e _','error');
+  try {
+    const cred = await auth.createUserWithEmailAndPassword(toEmail(username), pass);
+    await db.collection('userProfiles').doc(cred.user.uid).set({
+      username, isAdmin: false, createdAt: new Date().toISOString()
+    });
+    await auth.signOut();
+    toast(`Usuário "${username}" criado! Faça login novamente.`, 'success');
+    closeModal();
+  } catch(e) {
+    const msgs = { 'auth/email-already-in-use':'Usuário já existe.', 'auth/weak-password':'Senha muito fraca.' };
+    toast(msgs[e.code] || 'Erro: ' + e.message, 'error');
+  }
 }
 
-function mTrocarSenha(username) {
-  openModal(`Trocar Senha — ${username}`, `
-    <div class="form-group"><label class="form-label">Nova Senha *</label>
-      <input class="form-input" id="fp" type="password" placeholder="Nova senha"></div>
-    <div class="form-group"><label class="form-label">Confirmar *</label>
-      <input class="form-input" id="fp2" type="password" placeholder="Repita a senha"></div>
-  `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
-     <button class="btn btn-warning" onclick="svTrocarSenha('${username}')">🔑 Alterar</button>`);
+async function delUsuario(uid, username) {
+  if (!confirm(`Excluir o usuário "${username}"?\n\nTodos os dados financeiros serão apagados permanentemente.`)) return;
+  try {
+    await db.collection('userProfiles').doc(uid).delete();
+    await db.collection('userData').doc(uid).delete();
+    toast(`Usuário "${username}" removido`, 'info');
+    pgUsuarios();
+  } catch(e) { toast('Erro ao excluir usuário','error'); }
 }
 
-function svTrocarSenha(username) {
-  const pass  = document.getElementById('fp').value;
-  const pass2 = document.getElementById('fp2').value;
-  if (!pass) return toast('Digite a nova senha','error');
-  if (pass !== pass2) return toast('As senhas não coincidem','error');
-  const users = getUsers();
-  const idx   = users.findIndex(u => u.username === username);
-  users[idx].password = pass;
-  saveUsers(users);
-  toast('Senha alterada!', 'success');
-  closeModal();
-}
-
-function delUsuario(username) {
-  if (!confirm(`Excluir o usuário "${username}"?\n\nTodos os dados financeiros deste usuário serão apagados permanentemente.`)) return;
-  const users = getUsers().filter(u => u.username !== username);
-  saveUsers(users);
-  localStorage.removeItem('fa_v3_' + username);
-  toast(`Usuário "${username}" removido`, 'info');
-  pgUsuarios();
-}
-
-// ── INIT ──
-const PAGE_TITLES_EXT = { usuarios: 'Usuários' };
-Object.assign(PAGE_TITLES, PAGE_TITLES_EXT);
-
-initUsers();
+// ════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════
+Object.assign(PAGE_TITLES, { usuarios: 'Usuários' });
 document.getElementById('month-label').textContent = mName(S.cm, S.cy);
 
-// Patch navigate to include usuarios page
 const _origNavigate = navigate;
 navigate = function(page) {
   if (page === 'usuarios') {
@@ -1654,7 +1695,13 @@ navigate = function(page) {
   _origNavigate(page);
 };
 
-checkAuth();
+document.querySelector('.login-btn')?.setAttribute('id','login-btn');
+
+showLoading('Iniciando...');
+auth.onAuthStateChanged(async user => {
+  if (user) { await loginSuccess(user); }
+  else { showLogin(); }
+});
 </script>
 </body>
 </html>
