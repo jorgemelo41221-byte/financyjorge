@@ -1159,7 +1159,7 @@ function pgCartoes() {
                 </div></td>
                 <td>${pay
                   ? `<span class="badge badge-success">✅ Paga ${fDate(pay.date)}</span>`
-                  : tot>0?`<button class="btn btn-sm btn-success" onclick="mPagarFatura('${card.id}')">💰 Registrar Pagamento</button>`:'<span style="color:var(--text-muted);font-size:12px">—</span>`
+                  : tot>0?`<button class="btn btn-sm btn-success" onclick="mPagarFatura('${card.id}')">💰 Registrar Pagamento</button>`:'<span style="color:var(--text-muted);font-size:12px">—</span>'
                 }</td>
               </tr>`;
             }).join('')}
