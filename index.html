@@ -676,6 +676,54 @@ function calcTotal(total, n, rate) {
   return (!rate || rate <= 0) ? total : calcInstallment(total, n, rate) * n;
 }
 
+// ── INSTALLMENT HELPERS ──────────────────────────
+// Valor que a compra p representa no mês m/y
+function purchaseMonthValue(p, m, y) {
+  const dm = dMonth(p.date);
+  if (!dm) return 0;
+  const n = p.installments || 1;
+  if (n <= 1) {
+    // À vista: lança só no mês da compra
+    return (dm.m === m && dm.y === y) ? (parseFloat(p.totalValue) || 0) : 0;
+  }
+  // Parcelado: verifica se m/y está dentro do período de parcelas
+  const monthDiff = (y - dm.y) * 12 + (m - dm.m);
+  if (monthDiff >= 0 && monthDiff < n) {
+    return parseFloat(p.installmentValue) || (parseFloat(p.totalValue) / n) || 0;
+  }
+  return 0;
+}
+
+// Total de despesas de um mês (lógica correta de parcelas)
+function monthExpenses(m, y) {
+  return S.purchases.reduce((sum, p) => sum + purchaseMonthValue(p, m, y), 0);
+}
+
+// Compras que têm parcela no mês m/y
+function purchasesInMonth(m, y) {
+  return S.purchases.filter(p => purchaseMonthValue(p, m, y) > 0);
+}
+
+// Número da parcela atual: "3/8" ou "À vista"
+function installmentLabel(p, m, y) {
+  const n = p.installments || 1;
+  if (n <= 1) return 'À vista';
+  const dm = dMonth(p.date);
+  if (!dm) return `${n}x`;
+  const current = (y - dm.y) * 12 + (m - dm.m) + 1;
+  return `${current}/${n}`;
+}
+
+// Parcelas restantes incluindo o mês atual
+function installmentsLeft(p, m, y) {
+  const n = p.installments || 1;
+  if (n <= 1) return 0;
+  const dm = dMonth(p.date);
+  if (!dm) return 0;
+  const monthDiff = (y - dm.y) * 12 + (m - dm.m);
+  return Math.max(0, n - monthDiff);
+}
+
 // ════════════════════════════════════════════════
 // NAVIGATION
 // ════════════════════════════════════════════════
@@ -785,17 +833,17 @@ function renderNoData(canvas) {
 function pgDashboard() {
   const m=S.cm, y=S.cy;
   const totalR = monthSum(S.incomes, 'value', m, y);
-  const totalD = S.purchases.filter(p=>{ const dm=dMonth(p.date); return dm&&dm.m===m&&dm.y===y; })
-                             .reduce((s,p) => s+(parseFloat(p.totalValue)||0), 0);
+  const totalD = monthExpenses(m, y);
   const totalS = monthSum(S.savings, 'value', m, y);
   const saldo  = totalR - totalD - totalS;
   const totalAcum = S.savings.reduce((s,v) => s+(parseFloat(v.value)||0), 0);
 
-  // Faturas próximas
+  // Faturas próximas — usa parcela do mês do cartão
   const today = new Date();
   const alertas = S.cards.map(card => {
-    const fatura = S.purchases.filter(p => p.cardId===card.id && isCurMonth(p.date))
-                               .reduce((s,p) => s+(parseFloat(p.totalValue)||0), 0);
+    const fatura = purchasesInMonth(m, y)
+                     .filter(p => p.cardId===card.id)
+                     .reduce((s,p) => s + purchaseMonthValue(p, m, y), 0);
     if (!fatura) return null;
     let due = new Date(y, m, card.dueDay);
     if (due < today) due.setMonth(due.getMonth()+1);
@@ -803,9 +851,16 @@ function pgDashboard() {
     return diff <= 7 && diff >= 0 ? { name:card.name, fatura, diff } : null;
   }).filter(Boolean);
 
+  // Transações recentes: parcelas do mês corrente
+  const recentPurchases = purchasesInMonth(m, y).map(p => ({
+    ...p,
+    type: 'expense',
+    _monthValue: purchaseMonthValue(p, m, y),
+    _label: installmentLabel(p, m, y)
+  }));
   const recentTx = [
     ...S.incomes.filter(i=>isCurMonth(i.date)).map(i=>({...i,type:'income'})),
-    ...S.purchases.filter(p=>isCurMonth(p.date)).map(p=>({...p,type:'expense'})),
+    ...recentPurchases,
     ...S.savings.filter(s=>isCurMonth(s.date)).map(s=>({...s,type:'saving',description:s.observation||'Aporte MP'})),
   ].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,10);
 
@@ -821,7 +876,7 @@ function pgDashboard() {
         <div class="stat-icon">🛒</div>
         <div class="stat-label">Despesas do Mês</div>
         <div class="stat-value">${R(totalD)}</div>
-        <div class="stat-sub">${S.purchases.filter(p=>isCurMonth(p.date)).length} compras</div>
+        <div class="stat-sub">${purchasesInMonth(m,y).length} lançamentos</div>
       </div>
       <div class="stat-card ${saldo>=0?'blue':'red'}">
         <div class="stat-icon">${saldo>=0?'✅':'⚠️'}</div>
@@ -864,11 +919,11 @@ function pgDashboard() {
           <thead><tr><th>Descrição</th><th>Categoria</th><th>Data</th><th>Valor</th></tr></thead>
           <tbody>
             ${recentTx.map(t => `<tr>
-              <td>${t.type==='income'?'🟢':t.type==='saving'?'🔵':'🔴'} ${t.description||'—'}</td>
+              <td>${t.type==='income'?'🟢':t.type==='saving'?'🔵':'🔴'} ${t.description||'—'}${t._label&&t._label!=='À vista'?` <span class="badge badge-default" style="font-size:9px">${t._label}</span>`:''}</td>
               <td><span class="badge badge-default">${t.category||'—'}</span></td>
               <td>${fDate(t.date)}</td>
               <td style="font-weight:600;color:${t.type==='income'?'var(--success)':t.type==='saving'?'var(--info)':'var(--danger)'}">
-                ${t.type==='income'?'+':'−'}${R(parseFloat(t.value||t.totalValue||0))}
+                ${t.type==='income'?'+':'−'}${R(t.type==='expense'?(t._monthValue||0):parseFloat(t.value||0))}
               </td>
             </tr>`).join('')}
           </tbody>
@@ -882,10 +937,14 @@ function pgDashboard() {
     const labels = months.map(x=>x.label);
     mkBar('ch-rd', labels, [
       { label:'Receitas', data: months.map(({m,y})=>monthSum(S.incomes,'value',m,y)), backgroundColor:'rgba(16,185,129,.7)', borderRadius:4 },
-      { label:'Despesas', data: months.map(({m,y})=>S.purchases.filter(p=>{const dm=dMonth(p.date);return dm&&dm.m===m&&dm.y===y}).reduce((s,p)=>s+(parseFloat(p.totalValue)||0),0)), backgroundColor:'rgba(239,68,68,.7)', borderRadius:4 }
+      { label:'Despesas', data: months.map(({m,y})=>monthExpenses(m,y)), backgroundColor:'rgba(239,68,68,.7)', borderRadius:4 }
     ]);
+    // Categoria: usa valor da parcela do mês corrente
     const byCat={};
-    S.purchases.filter(p=>isCurMonth(p.date)).forEach(p=>{ byCat[p.category||'Outros']=(byCat[p.category||'Outros']||0)+parseFloat(p.totalValue||0); });
+    S.purchases.forEach(p=>{
+      const v = purchaseMonthValue(p, S.cm, S.cy);
+      if (v > 0) byCat[p.category||'Outros']=(byCat[p.category||'Outros']||0)+v;
+    });
     const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
     mkDoughnut('ch-cat', cats.map(c=>c[0]), cats.map(c=>c[1]));
   }, 50);
@@ -956,32 +1015,45 @@ function delReceita(id) {
 // PAGE: COMPRAS
 // ════════════════════════════════════════════════
 function pgCompras() {
-  const list = S.purchases.filter(p=>isCurMonth(p.date)).sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const total = list.reduce((s,p)=>s+(parseFloat(p.totalValue)||0),0);
+  const m=S.cm, y=S.cy;
+  // Lista de compras com parcela neste mês (inclui compras de meses anteriores ainda em andamento)
+  const list = purchasesInMonth(m, y).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const total = monthExpenses(m, y);
+  const parceladas = list.filter(p=>(p.installments||1)>1).length;
+
   document.getElementById('app-content').innerHTML = `
     <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);max-width:540px">
-      <div class="stat-card red"><div class="stat-label">Total</div><div class="stat-value">${R(total)}</div></div>
-      <div class="stat-card yellow"><div class="stat-label">Compras</div><div class="stat-value">${list.length}</div></div>
+      <div class="stat-card red"><div class="stat-label">Total do Mês</div><div class="stat-value">${R(total)}</div><div class="stat-sub">parcelas + à vista</div></div>
+      <div class="stat-card yellow"><div class="stat-label">Lançamentos</div><div class="stat-value">${list.length}</div><div class="stat-sub">${parceladas} parceladas</div></div>
       <div class="stat-card blue"><div class="stat-label">Ticket Médio</div><div class="stat-value">${R(list.length?total/list.length:0)}</div></div>
     </div>
     <div class="panel">
       <div class="panel-header">
-        <span class="panel-title">🛒 Compras / Despesas — ${mName(S.cm,S.cy)}</span>
+        <span class="panel-title">🛒 Compras / Despesas — ${mName(m,y)}</span>
         <button class="btn btn-primary btn-sm" onclick="mCompra()">+ Nova Compra</button>
       </div>
       <div style="overflow-x:auto">
         ${list.length ? `
         <table class="data-table">
-          <thead><tr><th>Descrição</th><th>Categoria</th><th>Cartão</th><th>Parcelas</th><th>Total Pago</th><th></th></tr></thead>
+          <thead><tr><th>Descrição</th><th>Categoria</th><th>Cartão</th><th>Parcela</th><th>Valor Mês</th><th>Total Compra</th><th></th></tr></thead>
           <tbody>
             ${list.map(p=>{
               const card=S.cards.find(c=>c.id===p.cardId);
+              const lbl=installmentLabel(p,m,y);
+              const left=installmentsLeft(p,m,y);
+              const monthVal=purchaseMonthValue(p,m,y);
               return `<tr>
                 <td>${p.description}${p.interestRate>0?'<span class="badge badge-warning" style="margin-left:6px;font-size:9px">+juros</span>':''}</td>
                 <td><span class="badge badge-danger">${p.category}</span></td>
                 <td><span class="badge badge-info">${card?card.name:'💵 Débito'}</span></td>
-                <td>${p.installments>1?`${p.installments}x ${R(p.installmentValue)}`:'À vista'}</td>
-                <td style="font-weight:600;color:var(--danger)">−${R(parseFloat(p.totalWithInterest||p.totalValue))}</td>
+                <td>
+                  ${lbl==='À vista'?'<span class="badge badge-default">À vista</span>':`
+                    <span class="badge badge-purple">${lbl}</span>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${left} restante${left!==1?'s':''}</div>
+                  `}
+                </td>
+                <td style="font-weight:700;color:var(--danger)">−${R(monthVal)}</td>
+                <td style="color:var(--text-muted);font-size:12px">${R(parseFloat(p.totalWithInterest||p.totalValue))}</td>
                 <td>
                   <button class="btn-icon" onclick="mCompra('${p.id}')">✏️</button>
                   <button class="btn-icon" onclick="delCompra('${p.id}')">🗑️</button>
@@ -1069,12 +1141,14 @@ function pgCartoes() {
       <div class="panel-header"><span class="panel-title">📋 Uso por Cartão — Mês Atual</span></div>
       <div style="overflow-x:auto">
         <table class="data-table">
-          <thead><tr><th>Cartão</th><th>Qtd.</th><th>Total Mês</th><th>Uso do Limite</th></tr></thead>
+          <thead><tr><th>Cartão</th><th>Qtd.</th><th>Fatura do Mês</th><th>Uso do Limite</th><th>Fatura</th></tr></thead>
           <tbody>
             ${S.cards.map(card=>{
-              const ps=S.purchases.filter(p=>p.cardId===card.id&&isCurMonth(p.date));
-              const tot=ps.reduce((s,p)=>s+(parseFloat(p.totalValue)||0),0);
+              const ps=purchasesInMonth(S.cm,S.cy).filter(p=>p.cardId===card.id);
+              const tot=ps.reduce((s,p)=>s+purchaseMonthValue(p,S.cm,S.cy),0);
               const pct=card.limit?((tot/card.limit)*100).toFixed(1):0;
+              const ck=`${card.id}_${mKey(S.cm,S.cy)}`;
+              const pay=card.payments&&card.payments[ck];
               return `<tr>
                 <td><strong>${card.name}</strong> <span style="color:var(--text-muted);font-size:11px">${card.bank}</span></td>
                 <td>${ps.length}</td>
@@ -1083,6 +1157,10 @@ function pgCartoes() {
                   <div class="prog-bar" style="width:90px"><div class="prog-fill" style="width:${Math.min(pct,100)}%;background:${pct>80?'var(--danger)':pct>50?'var(--warning)':'var(--success)'}"></div></div>
                   <span style="font-size:12px">${pct}%</span>
                 </div></td>
+                <td>${pay
+                  ? `<span class="badge badge-success">✅ Paga ${fDate(pay.date)}</span>`
+                  : tot>0?`<button class="btn btn-sm btn-success" onclick="mPagarFatura('${card.id}')">💰 Registrar Pagamento</button>`:'<span style="color:var(--text-muted);font-size:12px">—</span>`
+                }</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -1139,6 +1217,47 @@ function svCartao(id) {
 function delCartao(id) {
   if (!confirm('Excluir este cartão?')) return;
   S.cards=S.cards.filter(c=>c.id!==id); saveData(); toast('Removido','info'); pgCartoes();
+}
+
+function mPagarFatura(cardId) {
+  const card=S.cards.find(c=>c.id===cardId);
+  if(!card) return;
+  const tot=purchasesInMonth(S.cm,S.cy).filter(p=>p.cardId===cardId)
+               .reduce((s,p)=>s+purchaseMonthValue(p,S.cm,S.cy),0);
+  const today=new Date().toISOString().split('T')[0];
+  openModal(`💳 Registrar Pagamento — ${card.name}`, `
+    <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="font-size:12px;color:var(--text-muted)">Fatura de ${mName(S.cm,S.cy)}</div>
+      <div style="font-size:22px;font-weight:700;color:var(--success)">${R(tot)}</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Data do Pagamento *</label>
+        <input class="form-input" id="fp-date" type="date" value="${today}"></div>
+      <div class="form-group"><label class="form-label">Valor Pago (R$)</label>
+        <input class="form-input" id="fp-val" type="number" step="0.01" value="${tot.toFixed(2)}" placeholder="${R(tot)}">
+        <div class="form-hint">Deixe o valor da fatura ou ajuste se pagou diferente</div>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Observação</label>
+      <input class="form-input" id="fp-obs" placeholder="Ex: Pago via Pix, débito automático..."></div>
+  `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-success" onclick="svPagarFatura('${cardId}')">✅ Confirmar Pagamento</button>`);
+}
+
+function svPagarFatura(cardId) {
+  const date=document.getElementById('fp-date').value;
+  const val=parseFloat(document.getElementById('fp-val').value)||0;
+  const obs=document.getElementById('fp-obs').value.trim();
+  if(!date) return toast('Informe a data do pagamento','error');
+  const idx=S.cards.findIndex(c=>c.id===cardId);
+  if(idx<0) return;
+  if(!S.cards[idx].payments) S.cards[idx].payments={};
+  const ck=`${cardId}_${mKey(S.cm,S.cy)}`;
+  S.cards[idx].payments[ck]={ date, value:val, obs, month:mKey(S.cm,S.cy) };
+  saveData();
+  toast(`Pagamento de ${R(val)} registrado!`,'success');
+  closeModal();
+  pgCartoes();
 }
 
 // ════════════════════════════════════════════════
@@ -1221,26 +1340,34 @@ function delReserva(id) {
 function pgRelatorios() {
   const months=last12();
   const rData=months.map(({m,y})=>monthSum(S.incomes,'value',m,y));
-  const dData=months.map(({m,y})=>S.purchases.filter(p=>{const dm=dMonth(p.date);return dm&&dm.m===m&&dm.y===y}).reduce((s,p)=>s+(parseFloat(p.totalValue)||0),0));
+  const dData=months.map(({m,y})=>monthExpenses(m,y));
   const sData=months.map(({m,y})=>monthSum(S.savings,'value',m,y));
   const balData=months.map((_,i)=>rData[i]-dData[i]-sData[i]);
+  // Categoria e cartão: acumula parcelas por mês real (últimos 12 meses)
   const catAll={}, cardAll={};
-  S.purchases.forEach(p=>{
-    catAll[p.category||'Outros']=(catAll[p.category||'Outros']||0)+parseFloat(p.totalValue||0);
-    const c=S.cards.find(x=>x.id===p.cardId);
-    const k=c?c.name:'Débito/Dinheiro';
-    cardAll[k]=(cardAll[k]||0)+parseFloat(p.totalValue||0);
+  months.forEach(({m,y})=>{
+    S.purchases.forEach(p=>{
+      const v=purchaseMonthValue(p,m,y);
+      if(v<=0) return;
+      catAll[p.category||'Outros']=(catAll[p.category||'Outros']||0)+v;
+      const c=S.cards.find(x=>x.id===p.cardId);
+      const k=c?c.name:'Débito/Dinheiro';
+      cardAll[k]=(cardAll[k]||0)+v;
+    });
   });
 
-  // Future installments
+  // Projeção de parcelas futuras (meses além do atual)
+  const now=new Date(); const nm=now.getMonth(), ny=now.getFullYear();
   const futMap={};
-  S.purchases.filter(p=>p.installments>1).forEach(p=>{
-    const sd=new Date(p.date+'T12:00:00');
+  S.purchases.filter(p=>(p.installments||1)>1).forEach(p=>{
+    const dm=dMonth(p.date); if(!dm) return;
     for(let i=0;i<p.installments;i++){
-      const dd=new Date(sd); dd.setMonth(dd.getMonth()+i);
-      if (dd>=new Date()) {
-        const k=mKey(dd.getMonth(),dd.getFullYear());
-        futMap[k]=(futMap[k]||0)+(p.installmentValue||p.totalValue/p.installments);
+      let fm=dm.m+i, fy=dm.y;
+      while(fm>11){fm-=12;fy++;}
+      // Apenas meses futuros (além do mês atual)
+      if(fy>ny||(fy===ny&&fm>nm)){
+        const k=mKey(fm,fy);
+        futMap[k]=(futMap[k]||0)+(parseFloat(p.installmentValue)||parseFloat(p.totalValue)/p.installments||0);
       }
     }
   });
